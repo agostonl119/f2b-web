@@ -1,35 +1,136 @@
-Szükséges csomagok:
+# f2b-web
 
+Egy egyszerű webes felület a **Fail2ban** kezeléséhez és monitorozásához.
+
+---
+
+## 🛠️ Telepítési Útmutató
+
+Kövesd az alábbi lépéseket az alkalmazás és a szükséges függőségek telepítéséhez, valamint a jogosultságok beállításához.
+
+### 1. Előfeltételek és csomagok telepítése
+
+Telepítsd a minimálisan szükséges csomagokat a rendszeredre:
+
+```bash
 sudo apt update
-sudo apt install php-sqlite3 acl
+sudo apt install apache2 php php-sqlite3 acl fail2ban
+```
 
-sudo systemctl restart apache2
+> **Megjegyzés:** A `php-sqlite2` helyett a legtöbb modern Linux disztribúción a `php-sqlite3` csomag használatos.
 
-vagy
+---
 
-sudo systemctl restart php8.2-fpm
+### 2. Alkalmazás klónozása
 
-SQLite adatbázis olvasási jog
+Navigálj a webszerver gyökérkönyvtárába, klónozd a tárolót, majd állítsd be a megfelelő tulajdonost:
 
-sudo setfacl -m u:www-data:r /var/log/fail2ban.logsultságok (ACL)
+```bash
+cd /var/www
+sudo git clone https://github.com/agostonl119/f2b-web.git
+sudo chown -R www-data:www-data /var/www/f2b-web/
+```
 
-Hogy a webszerver (www-data) közvetlenül tudja olvasni a Fail2Ban SQLite adatbázisát:
+---
 
+### 3. Apache webszerver konfigurálása
+
+Hozz létre egy új konfigfájlt az Apache számára:
+
+```bash
+sudo nano /etc/apache2/sites-available/f2b-web.conf
+```
+
+Másold be az alábbi konfigurációt:
+
+```apache
+Alias /f2b /var/www/f2b-web
+
+<Directory /var/www/f2b-web/>
+    Options FollowSymLinks
+    AllowOverride None
+    AuthType Basic
+    AuthName "Restricted area"
+    AuthUserFile /etc/apache2/.htpasswd
+    Require valid-user
+</Directory>
+```
+
+Engedélyezd az új virtuális hostot:
+
+```bash
+sudo a2ensite f2b-web
+```
+
+---
+
+### 4. HTTP Basic Auth jelszó elkészítése
+
+Hozz létre egy jelszófájlt a hozzáférés korlátozásához (cseréld ki a `user` nevet a kívánt felhasználónévre):
+
+```bash
+sudo htpasswd -c /etc/apache2/.htpasswd user
+```
+
+---
+
+### 5. Fájl- és mappajogok módosítása (ACL)
+
+Biztosítsd a webszerver (`www-data`) számára az olvasási és végrehajtási jogokat a Fail2ban naplófájljaihoz és adatbázisához:
+
+```bash
+sudo setfacl -m u:www-data:r /var/log/fail2ban.log
 sudo setfacl -m u:www-data:r /var/lib/fail2ban/fail2ban.sqlite3
 sudo setfacl -m u:www-data:rx /var/lib/fail2ban/
+```
 
-Fail2Ban Log Fájl olvasási jogosultság (/var/log/fail2ban.log)
-Mivel az élő logok olvasásához a backend a tail parancsot futtatja a logfájlon, biztosítani kell, hogy a www-data user olvashassa azt:
+---
 
-sudo setfacl -m u:www-data:r /var/log/fail2ban.log
+### 6. Sudoers beállítások módosítása
 
-Ezen kívül a logrotate.d/fail2ban fájlban is írd át a group-ot www-data-ra!
+Engedélyezd a `www-data` felhasználónak, hogy jelszó nélkül futtathassa a szükséges parancsokat:
 
-Socket és fail2ban-client jogosultságok (Sudoers helyett socket alapú hozzáférés)
+```bash
+sudo visudo /etc/sudoers.d/f2b-web
+```
 
-Mivel a kódban a fail2ban-client parancsokat közvetlenül, sudo nélkül futtatjuk a socketen keresztül, ellenőrizd a /etc/fail2ban/fail2ban.conf-ban, hogy a socket fájl jogosultsága engedélyezi-e a hozzáférést (alapesetben a Fail2Ban socketet a root vagy a fail2ban csoport hozza létre megfelelő socketperms = 660-al vagy 777-el, illetve a Unix socket fájl jogai biztosítják, hogy a daemon végrehajtsa a socketen érkező banip/unbanip kéréseket).
+Illeszd be a következő sorokat:
 
-Ha a socket eléréséhez mégis szükség lenne sudo-ra (vagy ha a rendszer nem engedélyezi közvetlenül a socket írását a www-data-nak), akkor a /etc/sudoers fájlba (a visudo paranccsal) az alábbi sor beillesztésével engedélyezhető a jelszómentes futtatás kizárólag a fail2ban-client-hez:
+```text
+www-data ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client
+www-data ALL=(ALL) NOPASSWD: /usr/bin/tail
+```
 
-www-data ALL=(root) NOPASSWD: /usr/bin/fail2ban-client
-(A jelenlegi socket-alapú api.php implementációnk megpróbálja közvetlenül futtatni a klienst; ha a fenti sudoers sornak adsz jogot, az api.php-ban a parancs elejére beilleszthető a sudo).
+---
+
+### 7. Logrotate beállítása
+
+Szerkeszd a Fail2ban logrotate konfigurációs fájlját:
+
+```bash
+sudo nano /etc/logrotate.d/fail2ban
+```
+
+Módosítsd a fájlban lévő `create` sort úgy, hogy a `www-data` csoport is hozzáférjen a frissen rotált naplófájlokhoz:
+
+**Eredeti:**
+```text
+create 640 root adm
+```
+
+**Módosított:**
+```text
+create 640 root www-data
+```
+
+---
+
+### 8. Webszerver újratöltése
+
+A beállítások érvénybe léptetéséhez töltsd újra az Apache webszervert:
+
+```bash
+sudo systemctl reload apache2
+```
+
+Most már elérheted a felületet a böngésződben a `http://<szerver-ip>/f2b` címen!
