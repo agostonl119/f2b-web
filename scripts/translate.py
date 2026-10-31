@@ -20,12 +20,12 @@ SYSTEM_INSTRUCTION = (
 def translate_content(content, target_language):
     prompt = f"Target Language: {target_language}\n\nHungarian Document Content:\n{content}"
     
-    # Többszöri próbálkozás 503-as szerverhiba esetén
     max_retries = 3
     for attempt in range(max_retries):
         try:
+            # A hivatalosan elvárt gemini-3.8-flash modell használata
             response = client.models.generate_content(
-                model="gemini-2.5-flash", # Vagy gemini-1.5-flash
+                model="gemini-3.8-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
