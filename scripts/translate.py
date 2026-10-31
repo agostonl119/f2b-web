@@ -1,6 +1,8 @@
 import os
+import time
 from google import genai
 from google.genai import types
+from google.genai.errors import ServerError
 
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
@@ -18,16 +20,25 @@ SYSTEM_INSTRUCTION = (
 def translate_content(content, target_language):
     prompt = f"Target Language: {target_language}\n\nHungarian Document Content:\n{content}"
     
-    # Frissítve a hibaüzenetben javasolt gemini-3.8-flash modellre
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            temperature=0.2,
-        ),
-    )
-    return response.text
+    # Többszöri próbálkozás 503-as szerverhiba esetén
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash", # Vagy gemini-1.5-flash
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.2,
+                ),
+            )
+            return response.text
+        except ServerError as e:
+            if attempt < max_retries - 1:
+                print(f"Szerverterhelés (503), újrapróbálás {attempt + 1}. alkalommal 5 mp múlva...")
+                time.sleep(5)
+            else:
+                raise e
 
 def main():
     if not os.path.exists("README.md"):
