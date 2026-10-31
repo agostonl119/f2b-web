@@ -4,12 +4,8 @@ from google.genai import types
 
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# Mostantól a magyar README.md-ből csinálunk idegen nyelveket:
-# Kulcs: A célnyelv neve, Érték: A kimeneti fájl neve
 TARGET_LANGUAGES = {
     "English": "README.en.md",
-    # Ide jöhet még több nyelv is, ha szeretnéd, pl.:
-    # "German": "README.de.md",
 }
 
 SYSTEM_INSTRUCTION = (
@@ -22,8 +18,9 @@ SYSTEM_INSTRUCTION = (
 def translate_content(content, target_language):
     prompt = f"Target Language: {target_language}\n\nHungarian Document Content:\n{content}"
     
+    # Itt cseréltük le a modellt gemini-1.5-flash-re
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-1.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_INSTRUCTION,
