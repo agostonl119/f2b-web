@@ -4,7 +4,7 @@
   <a href="README.cz.md">中文</a>
 </div>
 
-# f2b-web 1.01
+# f2b-web 1.0
 
 Egy egyszerű webes felület a **Fail2ban** kezeléséhez és monitorozásához.
 
