@@ -1,41 +1,39 @@
 <?php
 /**
- * Fail2Ban Web Manager Backend API (SQLite + Socket alapú, többnyelvű, óránkénti statisztikával)
+ * Fail2Ban Web Manager Backend API
+ * (CIDR alhálózat és egyedi IP tiltás támogatással)
  */
 
 header('Content-Type: application/json; charset=utf-8');
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
 
-// Nyelvi szótárak
-$translations = [
-    'hu' => [
-        'err_socket' => 'Nem sikerült végrehajtani a parancsot a socketen keresztül: ',
-        'err_missing_params' => 'Hiányzó Jail vagy IP cím!',
-        'err_invalid_ip' => 'Érvénytelen IP cím formátum!',
-        'err_db' => 'Nem sikerült csatlakozni a Fail2Ban SQLite adatbázisához: ',
-        'success_ban' => 'IP (%s) sikeresen kitiltva a(z) %s jailben.',
-        'success_unban' => 'IP (%s) sikeresen feloldva a(z) %s jailből.',
-        'unknown_action' => 'Ismeretlen művelet!'
-    ],
-    'en' => [
-        'err_socket' => 'Failed to execute command via socket: ',
-        'err_missing_params' => 'Missing Jail or IP address!',
-        'err_invalid_ip' => 'Invalid IP address format!',
-        'err_db' => 'Failed to connect to Fail2Ban SQLite database: ',
-        'success_ban' => 'IP (%s) successfully banned in jail %s.',
-        'success_unban' => 'IP (%s) successfully unbanned from jail %s.',
-        'unknown_action' => 'Unknown action!'
-    ]
-];
-
 $lang = $_GET['lang'] ?? $_POST['lang'] ?? 'hu';
-if (!isset($translations[$lang])) {
+$allowed_langs = ['hu', 'en', 'zh'];
+if (!in_array($lang, $allowed_langs)) {
     $lang = 'hu';
 }
-$t = $translations[$lang];
+
+$file_path = __DIR__ . "/lang/{$lang}.php";
+$t = file_exists($file_path) ? include $file_path : include __DIR__ . "/lang/hu.php";
 
 $db_file = '/var/lib/fail2ban/fail2ban.sqlite3';
+$log_file = '/var/log/fail2ban.log';
+
+// Segédfüggvény: Ellenőrzi, hogy érvényes IP vagy CIDR formátum-e
+function validate_ip_or_cidr($target) {
+    if (filter_var($target, FILTER_VALIDATE_IP)) {
+        return true;
+    }
+    // CIDR ellenőrzés (pl. 192.168.5.0/24 vagy 2001:db8::/32)
+    if (strpos($target, '/') !== false) {
+        list($ip, $subnet) = explode('/', $target, 2);
+        if (filter_var($ip, FILTER_VALIDATE_IP) && is_numeric($subnet) && $subnet >= 0 && $subnet <= 128) {
+            return true;
+        }
+    }
+    return false;
+}
 
 function run_fail2ban_cmd($args) {
     global $t;
@@ -60,123 +58,145 @@ try {
 
         case 'status':
             if (!file_exists($db_file)) {
-                throw new Exception($t['err_db'] . "A fájl nem található ($db_file).");
+                throw new Exception($t['err_db'] . "A fájl nem létezik: " . $db_file);
             }
 
-            try {
-                $pdo = new PDO('sqlite:' . $db_file);
-                $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            } catch (PDOException $e) {
-                throw new Exception($t['err_db'] . $e->getMessage());
-            }
+            $pdo = new PDO("sqlite:" . $db_file);
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-            // Jailek lekérdezése
-            $jail_stmt = $pdo->query("SELECT name FROM jails");
-            $jails_raw = $jail_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            $jail_details = [];
-            $hourly_stats = []; // Óránkénti adatok gyűjtéséhez (elmúlt 24 óra)
-
-            // Inicializáljuk a 0-24 órát
-            for ($i = 0; $i < 24; $i++) {
-                $hour_key = sprintf('%02d:00', $i);
-                $hourly_stats[$hour_key] = [];
-            }
-
-            // Az elmúlt 24 óra UNIX timestamp határa
-            $last_24h = time() - (24 * 3600);
-
-            foreach ($jails_raw as $jail_row) {
-                $jail_name = $jail_row['name'];
-                $banned_ips = [];
-
-                try {
-                    $ban_query = $pdo->prepare("SELECT ip, timeofban, datetime(timeofban, 'unixepoch') as ban_time FROM bans WHERE jail = ?");
-                    $ban_query->execute([$jail_name]);
-                    $bans = $ban_query->fetchAll(PDO::FETCH_ASSOC);
-                    
-                    foreach ($bans as $b) {
-                        $banned_ips[] = [
-                            'ip' => $b['ip'],
-                            'time' => $b['ban_time'] ?? ''
-                        ];
-
-                        // Ha az elmúlt 24 órán belül történt, beletesszük az óránkénti statisztikába
-                        if ($b['timeofban'] >= $last_24h) {
-                            $hour_str = date('H:00', $b['timeofban']);
-                            if (!isset($hourly_stats[$hour_str][$jail_name])) {
-                                $hourly_stats[$hour_str][$jail_name] = 0;
-                            }
-                            $hourly_stats[$hour_str][$jail_name]++;
-                        }
-                    }
-                } catch (Exception $ex) {
-                    // Fallback socketre
-                    $j_res = run_fail2ban_cmd(['status', $jail_name]);
-                    if ($j_res['success']) {
-                        foreach ($j_res['raw'] as $line) {
-                            if (strpos($line, 'Banned IP list:') !== false) {
-                                $parts = explode(':', $line);
-                                if (isset($parts[1])) {
-                                    $ips = explode(' ', trim($parts[1]));
-                                    foreach ($ips as $ip) {
-                                        $clean_ip = trim($ip);
-                                        if (!empty($clean_ip)) {
-                                            $banned_ips[] = ['ip' => $clean_ip, 'time' => 'N/A'];
-                                        }
-                                    }
-                                }
+            $status_res = run_fail2ban_cmd(['status']);
+            $jail_names = [];
+            if ($status_res['success']) {
+                foreach ($status_res['raw'] as $line) {
+                    if (strpos($line, 'Jail list:') !== false) {
+                        $parts = explode(':', $line);
+                        if (isset($parts[1])) {
+                            $jails_str = trim($parts[1]);
+                            if ($jails_str !== '') {
+                                $jail_names = array_map('trim', explode(',', $jails_str));
                             }
                         }
                     }
                 }
+            }
 
-                $jail_details[] = [
-                    'name' => $jail_name,
+            $jails_data = [];
+            foreach ($jail_names as $jname) {
+                $stmt = $pdo->prepare("
+                    SELECT ip, datetime(timeofban, 'unixepoch', 'localtime') as time_banned 
+                    FROM bans 
+                    WHERE jail = :jail 
+                    ORDER BY timeofban DESC
+                ");
+                $stmt->execute([':jail' => $jname]);
+                $banned_ips = [];
+                while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    $banned_ips[] = [
+                        'ip' => $row['ip'],
+                        'time' => $row['time_banned']
+                    ];
+                }
+
+                $jails_data[] = [
+                    'name' => $jname,
                     'banned_count' => count($banned_ips),
                     'banned_ips' => $banned_ips
                 ];
             }
 
+            // Gördülő 24 órás statisztika
+            $now = time();
+            $start_window = $now - (24 * 3600);
+
+            $hourly_stats = [];
+            for ($i = 23; $i >= 0; $i--) {
+                $timestamp = $now - ($i * 3600);
+                $hour_key = date('H:00', $timestamp);
+                $hourly_stats[$hour_key] = [];
+                foreach ($jail_names as $jname) {
+                    $hourly_stats[$hour_key][$jname] = 0;
+                }
+            }
+
+            $stmt_hourly = $pdo->prepare("
+                SELECT jail, timeofban 
+                FROM bans 
+                WHERE timeofban >= :start_window AND timeofban <= :now
+            ");
+            $stmt_hourly->execute([
+                ':start_window' => $start_window,
+                ':now' => $now
+            ]);
+
+            while ($row = $stmt_hourly->fetch(PDO::FETCH_ASSOC)) {
+                $ban_time = (int)$row['timeofban'];
+                $jname = $row['jail'];
+                $hour_key = date('H:00', $ban_time);
+
+                if (isset($hourly_stats[$hour_key])) {
+                    if (!isset($hourly_stats[$hour_key][$jname])) {
+                        $hourly_stats[$hour_key][$jname] = 0;
+                    }
+                    $hourly_stats[$hour_key][$jname]++;
+                }
+            }
+
             echo json_encode([
                 'status' => 'success',
-                'jails' => $jail_details,
+                'jails' => $jails_data,
                 'hourly_stats' => $hourly_stats
-            ]);
+            ], JSON_UNESCAPED_UNICODE);
+            break;
+
+        case 'logs':
+            $logs = [];
+            if (file_exists($log_file) && is_readable($log_file)) {
+                $lines = file($log_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+                if ($lines !== false) {
+                    $logs = array_slice($lines, -50);
+                }
+            } else {
+                $logs = [$t['log_not_readable'] . $log_file];
+            }
+            echo json_encode(['status' => 'success', 'logs' => $logs], JSON_UNESCAPED_UNICODE);
             break;
 
         case 'ban':
             $jail = $_POST['jail'] ?? '';
-            $ip = $_POST['ip'] ?? '';
-            if (empty($jail) || empty($ip)) throw new Exception($t['err_missing_params']);
-            if (!filter_var($ip, FILTER_VALIDATE_IP)) throw new Exception($t['err_invalid_ip']);
+            $target = trim($_POST['ip'] ?? '');
 
-            $res = run_fail2ban_cmd(['set', $jail, 'banip', $ip]);
-            if (!$res['success']) throw new Exception($t['err_socket'] . $res['output']);
+            if (empty($jail) || empty($target)) {
+                throw new Exception($t['err_missing_params']);
+            }
+            if (!validate_ip_or_cidr($target)) {
+                throw new Exception($t['err_invalid_ip']);
+            }
 
-            echo json_encode(['status' => 'success', 'message' => sprintf($t['success_ban'], $ip, $jail)]);
+            $res = run_fail2ban_cmd(['set', $jail, 'banip', $target]);
+            if ($res['success']) {
+                echo json_encode(['status' => 'success', 'message' => sprintf($t['success_ban'], $target, $jail)], JSON_UNESCAPED_UNICODE);
+            } else {
+                throw new Exception($t['err_socket'] . $res['output']);
+            }
             break;
 
         case 'unban':
             $jail = $_POST['jail'] ?? '';
-            $ip = $_POST['ip'] ?? '';
-            if (empty($jail) || empty($ip)) throw new Exception($t['err_missing_params']);
+            $target = trim($_POST['ip'] ?? '');
 
-            $res = run_fail2ban_cmd(['set', $jail, 'unbanip', $ip]);
-            if (!$res['success']) throw new Exception($t['err_socket'] . $res['output']);
-
-            echo json_encode(['status' => 'success', 'message' => sprintf($t['success_unban'], $ip, $jail)]);
-            break;
-
-        case 'logs':
-            $log_file = '/var/log/fail2ban.log';
-            $lines = [];
-            if (file_exists($log_file) && is_readable($log_file)) {
-                exec("tail -n 50 " . escapeshellarg($log_file), $lines);
-            } else {
-                $lines = ["A log fájl nem olvasható."];
+            if (empty($jail) || empty($target)) {
+                throw new Exception($t['err_missing_params']);
             }
-            echo json_encode(['status' => 'success', 'logs' => $lines]);
+            if (!validate_ip_or_cidr($target)) {
+                throw new Exception($t['err_invalid_ip']);
+            }
+
+            $res = run_fail2ban_cmd(['set', $jail, 'unbanip', $target]);
+            if ($res['success']) {
+                echo json_encode(['status' => 'success', 'message' => sprintf($t['success_unban'], $target, $jail)], JSON_UNESCAPED_UNICODE);
+            } else {
+                throw new Exception($t['err_socket'] . $res['output']);
+            }
             break;
 
         default:
@@ -185,5 +205,8 @@ try {
 
 } catch (Exception $e) {
     http_response_code(400);
-    echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+    echo json_encode([
+        'status'  => 'error',
+        'message' => $e->getMessage()
+    ], JSON_UNESCAPED_UNICODE);
 }

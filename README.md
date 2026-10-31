@@ -133,4 +133,24 @@ A beállítások érvénybe léptetéséhez töltsd újra az Apache webszervert:
 sudo systemctl reload apache2
 ```
 
-Most már elérheted a felületet a böngésződben a `http://<szerver-ip>/f2b` címen!
+### 9. nftables ip tartomány feldolgozása
+
+Ha nftables-t használsz, az ip tartomány feldoglozásához a /etc/fail2ban/action.d/nftables.local fájlba tedd bele az alábbi sorokat:
+
+```bash
+[Definition]
+_nft_add_set = <nftables> add set <table_family> <table> <addr_set> \{ type <addr_type>\; flags interval\; \}
+
+actionban = <nftables> add set <table_family> <table> <addr_set> \{ type <addr_type>; flags interval; \}; \
+            <nftables> add element <table_family> <table> <addr_set> \{ <ip> \}
+
+actionunban = <nftables> delete element <table_family> <table> <addr_set> \{ <ip> \}
+```
+majd indítsd újra a fail2ban-t!
+
+
+```bash
+sudo systemctl reload fail2ban
+```
+
+Most már elérheted a felületet a böngésződben a `http://<szerver-ip>/f2b` címen! 
