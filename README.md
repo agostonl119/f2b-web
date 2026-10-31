@@ -1,3 +1,9 @@
+<div align="right">
+  <a href="README.md">English</a> | 
+  <a href="README.hu.md">Magyar</a>
+  <a href="README.cz.md">中文</a>
+</div>
+
 # f2b-web
 
 Egy egyszerű webes felület a **Fail2ban** kezeléséhez és monitorozásához.
