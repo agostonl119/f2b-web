@@ -140,6 +140,7 @@ Ha nftables-t használsz, az ip tartomány feldoglozásához a /etc/fail2ban/act
 ```bash
 [Definition]
 _nft_add_set = <nftables> add set <table_family> <table> <addr_set> \{ type <addr_type>\; flags interval\; \}
+_nft_check = <nftables> list chain <table_family> <table> <chain> | grep -q '@<addr_set>'
 
 actionban = <nftables> add set <table_family> <table> <addr_set> \{ type <addr_type>; flags interval; \}; \
             <nftables> add element <table_family> <table> <addr_set> \{ <ip> \}
