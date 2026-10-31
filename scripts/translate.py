@@ -18,9 +18,9 @@ SYSTEM_INSTRUCTION = (
 def translate_content(content, target_language):
     prompt = f"Target Language: {target_language}\n\nHungarian Document Content:\n{content}"
     
-    # Itt cseréltük le a modellt gemini-1.5-flash-re
+    # A legfrissebb SDK-hoz igazított modellnév
     response = client.models.generate_content(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_INSTRUCTION,
